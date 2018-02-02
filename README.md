@@ -4,7 +4,9 @@ machine reading comprehension with deep learning
 Implementation of <a href='https://arxiv.org/pdf/1707.09098.pdf'>MEMEN: Multi-layer Embedding with Memory Networks for Machine Comprehension</a>
 
 
-MEMEN: Multi-layer Embedding with Memory Networks for Machine Comprehension #process: 
+MEMEN: Multi-layer Embedding with Memory Networks for Machine Comprehension 
+
+process: 
 
 1.encoder with bi-LSTM to word/char/ner/pos embeddings; 
 
