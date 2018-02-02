@@ -21,7 +21,10 @@ class MemenNetwork():
         self.context_ner=tf.placeholder(tf.int32, [None, self.article_len], name="context_ner")   #NER tag:PERSON,LOCATION,ORGANIZATION
         self.context_pos=tf.placeholder(tf.int32,[None,self.self.article_len],name="context_pos") #POS tag:part of speech:noun,verb
 
-        self.logits = self.inference()
+        self.label_start=tf.placeholder(tf.int32,[None],name="start_point") #start point
+        self.label_end = tf.placeholder(tf.int32, [None], name="end_point")  # start point
+
+        self.logits_start, self.logits_end = self.inference()
         self.loss_val = self.loss()
         self.train_op = self.train()
 
@@ -31,11 +34,13 @@ class MemenNetwork():
         self.embedding_ner = tf.get_variable("embedding_ner", [self.ner_vocab_sz, self.embed_sz]) #embedding matrix for NER #TODO YOU CAN PRETRAIN THIS, AND LOAD FROM OUTSIDE
         self.embedding_pos = tf.get_variable("embedding_pos", [self.pos_vocab_sz, self.embed_sz]) #embedding matrix for POS #TODO YOU CAN PRETRAIN THIS, AND LOAD FROM OUTSIDE
         self.weight1=tf.get_variable("weight1", [self.hidden_size*6,1])
+        self.weight_s = tf.get_variable("weight_s", [self.hidden_size * 2, 1])
 
     def inference(self):
         self.encode_layer() #1.encode
         self.matching_layer() #2.matching
-        self.output_layer() #3.output layer
+        start_logits,end_logits=self.output_layer() #3.output layer
+        return start_logits,end_logits
 
     def encode_layer(self):
         # 1.1 embedding of word/character/ner/pos for query
@@ -51,7 +56,7 @@ class MemenNetwork():
         fw_cell = tf.nn.rnn_cell.BasicLSTMCell(self.hidden_size, state_is_tuple=True)
         bw_cell = tf.nn.rnn_cell.BasicLSTMCell(self.hidden_size, state_is_tuple=True)
         bi_outputs_query, bi_state_query = tf.nn.bidirectional_dynamic_rnn(fw_cell, bw_cell, query, dtype=tf.float32,time_major=False,swap_memory=True,scope="query")
-        self.r_q=tf.concat([bi_outputs_query[0],bi_outputs_query[1]],axis=-1) ##[none,sentence_len,hidden_size*2]query representation. bi_outputs_query contain two elements.one for forward part, another for backward part
+        self.r_q=tf.concat([bi_outputs_query[0],bi_outputs_query[1]],axis=-1) #[none,sentence_len,hidden_size*2] query representation. bi_outputs_query contain two elements.one for forward part, another for backward part
 
         # 2.1 embedding of word/character/ner/pos for context
         context_embeddings_word = tf.nn.embedding_lookup(self.embedding_word, self.context)   # [none,self.article_len,self.embed_sz]
@@ -191,31 +196,79 @@ class MemenNetwork():
 
     def output_layer(self):
         #1.initialize the hidden state of the pointer network by a query-aware representation.
-        l_0=self.query_aware_representation()
+        self.l_0=self.query_aware_representation() ##[none,hidden_size*2]
 
         #2.predict the indices that represent the answer's location in the passage by using initialized hidden state and passage representation.
-        self.point_network()
+        start_point_pred,end_point_pred=self.point_network()
+
+        #3.GRU
+        #TODO
+        return start_point_pred,end_point_pred
+
 
     def query_aware_representation(self):
         """
-        query aware representation
+        query aware representation,in fact, it is a local attention. input is r_q:[none,sentence_len,hidden_size*2]
         :return:
         """
-        pass
+        z_=tf.layers.dense(self.r_q,self.hidden_size*2,activation=tf.nn.tanh,use_bias=True) #[none,sentence_len,hidden_size*2]
+        z=tf.layers.dense(z_,1)       #[none,sentence_len,1]
+        a=tf.nn.softmax(z,axis=1)     #[none,setence_len,1]
+        l_0=tf.multiply(a,self.r_q)   #[none,sentence_len,hidden_size*2]
+        l_0=tf.reduce_sum(l_0,axis=1) #[none,hidden_size*2]
+        return l_0                    #[none,hidden_size*2]
 
     def point_network(self):
         """
         point network
-        :param O: context representation
-        :param l_0: query-aware representation
+        :param O: context representation: [none,article_len,hidden_size*4]. it is a output of matching layer.
+        :param l_0: query-aware representation:[none,hidden_size*2]
         :return:
         """
+        p_list=[]
+        for i in range(2):
+            p=self.point_network_single(i) #[none,]
+
+            p_list.append(p)
+
+        p_start=p_list[0]
+        p_end=p_list[1]
+        return p_start,p_end
+
+    def point_network_single(self,k):
+        """
+        point network single
+        :param k: k=1,2 represent the start point and end point of the answer
+        :return:
+        """
+        with tf.variable_scope("point_network"+str(k)):
+            weight_p = tf.get_variable("weight_p", [self.hidden_size * 4, self.hidden_size * 2])
+            weight_h = tf.get_variable("weight_h", [self.hidden_size * 2, self.hidden_size * 2])
+            weight_c = tf.get_variable("weight_c", [self.hidden_size * 2, 1])
+            z_ =  tf.nn.tanh(tf.multiply(self.O,weight_p)+tf.expand_dims(tf.multiply(self.l_0,weight_h),axis=1)) #[none,article_len,hidden_size*2]
+            z=tf.squeeze(tf.multiply(z_,weight_c)) #[none,article_len]
+            a=tf.nn.softmax(z,axis=1) #[none,article_len]
+            p=tf.argmax(a,axis=1) #[none,]
+
+            ########################################################
+            #TODO search multiple times to narrow down predicted answer
+            #v=tf.multiply(tf.expand_dims(a,axis=1),self.O) #[none,article_len,hidden_size*4]
+            #v=tf.reduce_sum(v,axis=1) #[none,hidden_size*4]
+            #self.GRU()
+            ########################################################
+        return p #[none,]
+
+    def GRU(self):
         pass
 
     def loss(self):
-        loss = tf.losses.sparse_softmax_cross_entropy(self.A, self.logits, weights=self.weights)
-        l2_losses = tf.add_n([tf.nn.l2_loss(v) for v in tf.trainable_variables() if ('bias' not in v.name)]) * self.l2_lambda
-        return loss + l2_losses
+        loss_start = tf.losses.sparse_softmax_cross_entropy(self.label_start, self.logits_start) #[none,]
+        loss_start=tf.reduce_mean(loss_start) #scalar
+        loss_end = tf.losses.sparse_softmax_cross_entropy(self.label_end, self.logits_end) #[none,]
+        loss_end = tf.reduce_mean(loss_end)  # scalar
+        l2_losses = tf.add_n([tf.nn.l2_loss(v) for v in tf.trainable_variables() if ('bias' not in v.name)]) * self.l2_lambda #scalar
+        loss=loss_start+loss_end+l2_losses
+        return loss #scalar
 
 
     def train(self):
@@ -223,7 +276,11 @@ class MemenNetwork():
         train_op = tf_contrib.layers.optimize_loss(self.loss_val, global_step=self.global_step,learning_rate=learning_rate, optimizer="Adam",clip_gradients=self.clip_gradients)
         return train_op
 
-#toy task: train and predict.
+#toy task: read a passenge,
+#input:
+#output:
+#train and predict.
+
 def train():
     pass
 
