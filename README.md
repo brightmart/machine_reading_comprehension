@@ -9,8 +9,10 @@ MEMEN: Multi-layer Embedding with Memory Networks for Machine Comprehension
 process: 
 
 1.encoder with bi-LSTM to word/char/ner/pos embeddings; 
-2. matching of query and context(3 different attentions/alginment matrix),concat mathings, gate, bi-LSTM 
-3. use pointer network(PNet) to get start point and end point. 
+
+2. matching of query and context(3 different attentions/alginment matrix),concat mathings, gate, bi-LSTM; 
+
+3. use pointer network(PNet) to get start point and end point; 
 
 PNet initialize with query-awere representation==>
 
