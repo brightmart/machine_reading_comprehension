@@ -32,6 +32,7 @@ input:(paragraphs,query). for example,paragraphs=[2, 6, 9, 5, 4, 0, 8, 3, 7, 1];
 
 output:(start_point,end_point). for example,start_point: 1,end_point: 3,means the following three elements sum up most in the array:[6, 9, 5]
 
+for more detail,check train() and predict() of memen_model.py
 
 Reference:
 --------------------------------------------------------------------------------------------------------------
