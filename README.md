@@ -37,7 +37,8 @@ for more detail,check train() and predict() of memen_model.py
 
 Reference:
 --------------------------------------------------------------------------------------------------------------
-MEMEN: Multi-layer Embedding with Memory Networks for Machine Comprehension,Boyuan Pan, Hao Li, Zhou Zhao, Bin Cao, Deng Cai, Xiaofei He
+MEMEN: Multi-layer Embedding with Memory Networks for Machine Comprehension,
+Boyuan Pan, Hao Li, Zhou Zhao, Bin Cao, Deng Cai, Xiaofei He
 
 
 
