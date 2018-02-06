@@ -1,6 +1,7 @@
 Machine Reading Comprehension with Deep Learning
 
-Implementation of <a href='https://arxiv.org/pdf/1707.09098.pdf'>MEMEN: Multi-layer Embedding with Memory Networks for Machine Comprehension</a>, the 2rd place on Aug 2017 for standford machine reading comprehension <a href='https://rajpurkar.github.io/SQuAD-explorer/'>SQuAD</a>
+Implementation of <a href='https://arxiv.org/pdf/1707.09098.pdf'>MEMEN: Multi-layer Embedding with Memory Networks for Machine Comprehension</a>
+list the 2rd place on Aug 2017 for standford machine reading comprehension competition <a href='https://rajpurkar.github.io/SQuAD-explorer/'>SQuAD</a>
 
 
 MEMEN: Multi-layer Embedding with Memory Networks for Machine Comprehension 
