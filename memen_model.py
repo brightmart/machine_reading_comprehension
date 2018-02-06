@@ -13,7 +13,7 @@ import numpy as np
 
 class MemenNetwork():
     def __init__(self,l2_lambda,article_len,sentence_len,vocab_sz,embed_sz,ner_vocab_sz,pos_vocab_sz,
-                 lr=0.0001,matching_hop_times=1,is_training=True,output_hop_times=1,clip_gradients=5.0): #matching_hop_times=3,output_hop_times=3 TODO
+                 lr=0.0001,matching_hop_times=3,is_training=True,output_hop_times=3,clip_gradients=5.0): #matching_hop_times=3,output_hop_times=3 TODO
         self.l2_lambda=l2_lambda
         self.article_len=article_len
         self.sentence_len=sentence_len
@@ -24,6 +24,8 @@ class MemenNetwork():
         self.matching_hop_times=matching_hop_times
         self.output_hop_times=output_hop_times
         self.is_training=is_training
+        print("self.is_training:",self.is_training)
+
         self.hidden_size=embed_sz
         self.lr=lr
         self.clip_gradients=clip_gradients
@@ -60,10 +62,7 @@ class MemenNetwork():
         self.embedding_char = tf.get_variable("embedding_char", [self.vocab_sz, self.embed_sz]) #character embedding matrix #TODO YOU CAN PRETRAIN THIS, AND LOAD FROM OUTSIDE
         self.embedding_ner = tf.get_variable("embedding_ner", [self.ner_vocab_sz, self.embed_sz]) #embedding matrix for NER #TODO YOU CAN PRETRAIN THIS, AND LOAD FROM OUTSIDE
         self.embedding_pos = tf.get_variable("embedding_pos", [self.pos_vocab_sz, self.embed_sz]) #embedding matrix for POS #TODO YOU CAN PRETRAIN THIS, AND LOAD FROM OUTSIDE
-
         self.embedding_query = tf.get_variable("embedding_query", [self.vocab_sz, self.embed_sz]) #word embedding matrix      #TODO YOU CAN PRETRAIN THIS, AND LOAD FROM OUTSIDE
-
-
         self.weight1=tf.get_variable("weight1", [self.hidden_size*6,1])
         self.weight_s = tf.get_variable("weight_s", [self.hidden_size * 2, 1])
 
@@ -86,7 +85,7 @@ class MemenNetwork():
         # 1.3.use bi-directional rnn to encoding inputs(query)
         fw_cell = tf.nn.rnn_cell.BasicLSTMCell(self.hidden_size, state_is_tuple=True)
         bw_cell = tf.nn.rnn_cell.BasicLSTMCell(self.hidden_size, state_is_tuple=True)
-        bi_outputs_query, bi_state_query = tf.nn.bidirectional_dynamic_rnn(fw_cell, bw_cell, query_embeddings_word, dtype=tf.float32,time_major=False,swap_memory=True,scope="query") #TODO
+        bi_outputs_query, bi_state_query = tf.nn.bidirectional_dynamic_rnn(fw_cell, bw_cell, query_embeddings_word, dtype=tf.float32,time_major=False,scope="query") #swap_memory=Trues
         self.r_q=tf.concat([bi_outputs_query[0],bi_outputs_query[1]],axis=-1) #[none,sentence_len,hidden_size*2] query representation. bi_outputs_query contain two elements.one for forward part, another for backward part
         self.u_q=tf.concat([bi_state_query[0][1],bi_state_query[1][1]],axis=-1) #[none,hidden_size*2].the concatenation of both directions' last hidden state.
 
@@ -100,9 +99,8 @@ class MemenNetwork():
         #context = tf.concat([context_embeddings_word,context_embeddings_char, context_embeddings_ner, context_embeddings_pos],axis=2)  # TODO [none,self.article_len,self.embed_sz*4]
 
         # 1.3.use bi-directional rnn to encoding inputs(context)
-        bi_outputs_context, bi_state_context = tf.nn.bidirectional_dynamic_rnn(fw_cell, bw_cell, context_embeddings_word, dtype=tf.float32,time_major=False,swap_memory=True,scope="context") #TODO
+        bi_outputs_context, bi_state_context = tf.nn.bidirectional_dynamic_rnn(fw_cell, bw_cell, context_embeddings_word, dtype=tf.float32,time_major=False,scope="context") #swap_memory=True
         self.r_p=tf.concat([bi_outputs_context[0],bi_outputs_context[1]],axis=-1) #context representation #[none,article_len,hidden_size*2]
-
 
     def matching_layer(self):
         """
@@ -124,12 +122,14 @@ class MemenNetwork():
                 self.m_3=self.context_based_similarity_matching() #[none,hidden_size*2]
 
                 # 1.4. transform three differents matching output to get integrated hierarchical matching results.
-                M=self.transform_matchings_concat()
+                M=self.transform_matchings_concat() #[none,article_len,hidden_size*2]
 
                 # 2. add an additional gate: to filtrates the part of tokens that are helpful in understanding the relation between passage and query.
                 M=self.add_gate(M) #[none,article_len,hidden_size*2]
+
                 # 3. pass through a bi-directional LSTM.
-                self.O=self.bi_directional_LSTM(M,"matching")    #[none,article_len,hidden_size*4]
+                self.O=self.bi_directional_LSTM(M,"matching")    #[none,article_len,hidden_size*2]
+
                 # 4.update original passage(context) representation r_p for the use of next layer.
                 with tf.variable_scope("dimension_reduction"):
                     self.r_p=tf.layers.dense(self.O,self.hidden_size*2)   #[none,article_len,hidden_size*2] #IMPORT in multiple layers, the output of directional LSTM O can be regarded as (refined) context r_p
@@ -138,7 +138,7 @@ class MemenNetwork():
     def integral_query_matching(self):
         """
         integral query matching. input:u_q,r_p. obtain the importance of each word in passage according to the integral query
-        #  by means of computing the match between u_q and each rprsnt r_p by taking inner product.
+        #  by means of computing the match between u_q and each representation r_p by taking inner product.
         :return:  m_1:[none,hidden_size*2]
         """
         u_q_expand = tf.expand_dims(self.u_q, axis=1)  # [none,1,hidden_size*2]
@@ -154,18 +154,20 @@ class MemenNetwork():
     def query_based_similarity_matching(self):
         """
         query-based similarity matching.
+        :param: r_p:[none,article_len,hidden_size*2]
+        :param: r_q:[none,sentence_len,hidden_size*2]
         :return: M_2:[none,article_len,hidden_size*2]
         """
+        #TODO you can add other matching formula between qurey and context, check 'dynamic memory network', if you like.
         # A_part1=tf.matmul(self.r_p,self.r_q,transpose_b=True) #[none,article_len,sentence_len]
         with tf.variable_scope("query_based_similarity_matching"):
             r_p_expand = tf.expand_dims(self.r_p, axis=2)  # [none,article_len,1,hidden_size*2]
             r_q_expand = tf.expand_dims(self.r_q, axis=1)  # [none,1,sentence_len,hidden_size*2]
-            part1 = tf.multiply(r_p_expand,r_q_expand)  # [none,article_len,sentence_len,hidden_size*2].A_part1=tf.reduce_sum(A_part1,axis=-1) #[none,article_len,sentence_len]
-
+            r_p_q = tf.multiply(r_p_expand,r_q_expand)  # [none,article_len,sentence_len,hidden_size*2].A_part1=tf.reduce_sum(A_part1,axis=-1) #[none,article_len,sentence_len]
             r_p_tile = tf.tile(r_p_expand, [1, 1, self.sentence_len, 1])  # [none,article_len,sentence_len,hidden_size*2]
             r_q_tile = tf.tile(r_q_expand, [1, self.article_len, 1, 1])  # [none,article_len,sentence_len,hidden_size*2]
             # concat
-            A = tf.concat([part1, r_p_tile, r_q_tile], axis=-1)  # [none,article_len,sentence_len,hidden_size*6] #TODO you can add more features like |r_p - r_q|, r_pWr_q
+            A = tf.concat([r_p_q, r_p_tile, r_q_tile], axis=-1)  # [none,article_len,sentence_len,hidden_size*6] #TODO you can add more features like |r_p - r_q|, r_pWr_q
             self.A = tf.squeeze(tf.layers.dense(A, 1), axis=-1)  # [none,article_len,sentence_len]=[none,n,m]
             # softmax function is performed across the row vector
             B = tf.nn.softmax(self.A, dim=2) #[none,article_len,sentence_len]. how to understand 'performed across the row vector. and attention is based on query embedding.
@@ -194,7 +196,6 @@ class MemenNetwork():
         with tf.variable_scope("transform_matchings_concat"):
             m_1=tf.expand_dims(self.m_1,axis=1)   #[none,1,hidden_size*2]
             M_1=tf.tile(m_1,[1,self.article_len,1]) #[none,article_len,hidden_size*2]
-
             m_3=tf.expand_dims(self.m_3,axis=1)   #[none,1,hidden_size*2]
             M_3=tf.tile(m_3,[1,self.article_len,1]) #[none,article_len,hidden_size*2]
 
@@ -208,7 +209,7 @@ class MemenNetwork():
         """
         add gate
         M:[none,article_len,hidden_size*2]
-        :return:
+        :return:[none,article_len,hidden_size*2]
         """
         with tf.variable_scope("add_gate"):
             g=tf.sigmoid(tf.layers.dense(M,1,use_bias=True))  #[none,article_len,1]
@@ -227,10 +228,11 @@ class MemenNetwork():
             bw_cell = tf.nn.rnn_cell.BasicLSTMCell(self.hidden_size, state_is_tuple=True)
             bi_outputs, bi_state = tf.nn.bidirectional_dynamic_rnn(fw_cell, bw_cell, input, dtype=tf.float32,time_major=False, swap_memory=True,scope=scope)
             result = tf.concat([bi_outputs[0], bi_outputs[1]],axis=-1) # bi_outputs_query contain two elements.one for forward part, another for backward part
-        return result #[none,sequence_length,h*4]
+        return result #[none,sequence_length,h*2]
 
     def output_layer(self):
         #1.initialize the hidden state of the pointer network by a query-aware representation.
+        start_point_pred=None;end_point_pred=None;l_k_1=None;l_k_2=None
         with tf.variable_scope("output_layer"):
             l_0=self.query_aware_representation() ##[none,hidden_size*2]
             l_k_1=l_k_2=l_0
@@ -243,12 +245,12 @@ class MemenNetwork():
                 #3.use GRU to update l_k with v_k as input
                 l_k_1=self.GRU(1,l_k_1,v_k_1)
                 l_k_2 = self.GRU(2,l_k_2, v_k_2)
-        return start_point_pred,end_point_pred #[none],[none]
+        return start_point_pred, end_point_pred #[none],[none]
 
     def point_network(self,l_k_1,l_k_2):
         """
         point network
-        :param O: context representation: [none,article_len,hidden_size*4]. it is a output of matching layer.
+        :param O: context representation: [none,article_len,hidden_size*2]. it is a output of matching layer.
         :param l_0: query-aware representation:[none,hidden_size*2]
         :return:
         """
@@ -259,35 +261,36 @@ class MemenNetwork():
 
     def point_network_single(self,k,l_k):
         """
-        point network single
+        point network,single
         :param k: k=1,2 represent the start point and end point of the answer
         :param l_k: [none,hidden_size*2].
         :return: p:[none,]
         :return: v_k:[none,hidden_size*4]
         """
         with tf.variable_scope("point_network"+str(k)):
-            part_1=tf.layers.dense(self.O,self.hidden_size * 2)
+            part_1=tf.layers.dense(self.O,self.hidden_size * 2) #[none,article_len,hidden_size*2]; where self.O is [none,article_len,hidden_size*2].
             part_2=tf.expand_dims(tf.layers.dense(l_k,self.hidden_size * 2),axis=1)
             z_ =  tf.nn.tanh(part_1+part_2) #[none,article_len,hidden_size*2]
             z=tf.squeeze(tf.layers.dense(z_,1),axis=2) #[none,article_len]
             a=tf.nn.softmax(z,dim=1) #[none,article_len]
             #p=tf.argmax(a,axis=1) #[none,]
-            v_k=tf.multiply(tf.expand_dims(a,axis=2),self.O) #[none,article_len,hidden_size*4]
-            v_k=tf.reduce_sum(v_k,axis=1) #[none,hidden_size*4]
+            v_k=tf.multiply(tf.expand_dims(a,axis=2),self.O) #[none,article_len,hidden_size*2]
+            v_k=tf.reduce_sum(v_k,axis=1) #[none,hidden_size*2]
         return a,v_k
 
     def query_aware_representation(self):
         """
-        query aware representation,in fact, it is a local attention. input is r_q:[none,sentence_len,hidden_size*2]
-        :return:
+        query aware representation,in fact, it is a local attention.
+        input: r_q:[none,sentence_len,hidden_size*2]
+        :return:[none,hidden_size*2]
         """
         with tf.variable_scope("query_aware_representation"):
             z_=tf.layers.dense(self.r_q,self.hidden_size*2,activation=tf.nn.tanh,use_bias=True) #[none,sentence_len,hidden_size*2]
             z=tf.layers.dense(z_,1)       #[none,sentence_len,1]
-            a=tf.nn.softmax(z,dim=1)     #[none,setence_len,1]
+            a=tf.nn.softmax(z,dim=1)      #[none,setence_len,1]
             l_0=tf.multiply(a,self.r_q)   #[none,sentence_len,hidden_size*2]
             l_0=tf.reduce_sum(l_0,axis=1) #[none,hidden_size*2]
-        return l_0                    #[none,hidden_size*2]
+        return l_0                        #[none,hidden_size*2]
 
     def GRU(self,k,l_k,v_k):
         with tf.variable_scope("GRU"+str(k)):
@@ -297,6 +300,7 @@ class MemenNetwork():
         return l_k
 
     def loss(self):
+        #label_start:[none]; self.logits_start:[none, article_len]
         loss_start=tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.label_start, logits=self.logits_start) #[none,]
         loss_start=tf.reduce_mean(loss_start) #scalar
         loss_end = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.label_end, logits=self.logits_end) #[none,]
@@ -317,14 +321,13 @@ class MemenNetwork():
 
 #train and predict.
 article_len=10
+sentence_len=1
 
 l2_lambda=0.0001
-vocab_sz=100
-embed_sz=128
-ner_vocab_sz=100
-pos_vocab_sz=100
-sentence_len=1
-article_len=10
+vocab_sz=10
+embed_sz=8 #128
+ner_vocab_sz=10
+pos_vocab_sz=10
 pos_vocab_sz=10
 lr=0.0001
 
